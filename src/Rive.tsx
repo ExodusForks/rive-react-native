@@ -50,6 +50,12 @@ import {
 } from './utils';
 
 export type PropertyCallback = (value: any) => void;
+
+const isHttpUrl = (uri: string | null | undefined): boolean => {
+  if (!uri) return false;
+  return uri.startsWith('http://') || uri.startsWith('https://');
+};
+
 export class RiveNativeEventEmitter {
   constructor(
     public emitter: NativeEventEmitter,
@@ -370,6 +376,11 @@ const nativeEventEmitter =
 export const RiveRenderer =
   RiveReactNativeRendererModule as RiveRendererInterface;
 
+type DeprecatedUrl = {
+  /** @deprecated `url` is disabled in hardened runtime. */
+  url: string;
+};
+
 type RiveProps = {
   onPlay?: (
     event: NativeSyntheticEvent<{
@@ -454,10 +465,7 @@ type Props = {
   stateMachineName?: string;
   autoplay?: boolean;
   children?: React.ReactNode;
-} & XOR<
-  XOR<{ resourceName: string }, { url: string }>,
-  { source: number | { uri: string } }
->;
+} & XOR<XOR<{ resourceName: string }, DeprecatedUrl>, { source: number }>;
 
 export const RiveViewManager = requireNativeComponent<RiveProps>(VIEW_NAME);
 
@@ -490,25 +498,47 @@ const RiveContainer = React.forwardRef<RiveRef, Props>(
     ref
   ) => {
     const assetID = typeof source === 'number' ? source : null;
-    const sourceURI = typeof source === 'object' ? source.uri : null;
     const { resourceName, url } = useMemo(() => {
       if (resourceNameProp) {
         return { resourceName: resourceNameProp };
       }
 
       if (urlProp) {
-        return { url: urlProp };
-      }
-
-      const assetURI = assetID ? resolveAssetSource(assetID)?.uri : sourceURI;
-
-      if (!assetURI) {
+        if (__DEV__) {
+          console.warn(
+            "[Rive] The `url` prop is disabled in hardened runtime. Use `require('./file.riv')` or `resourceName`."
+          );
+        }
         return {};
       }
 
-      // handle http address and dev server
-      if (assetURI.match(/^https?:\/\//)) {
+      const assetURI = assetID ? resolveAssetSource(assetID)?.uri : null;
+
+      if (!assetURI) {
+        if (__DEV__) {
+          console.warn(
+            '[Rive] Invalid source: resolveAssetSource returned no URI. ' +
+              'Did you pass `require("./file.riv")` or a valid `resourceName`?'
+          );
+        }
+        return {};
+      }
+
+      // In dev, require('./file.riv') resolves to a Metro URL.
+      // On physical iOS devices this is usually your machine LAN IP, not localhost.
+      if (__DEV__ && assetID && isHttpUrl(assetURI)) {
         return { url: assetURI };
+      }
+
+      // Block any other HTTP/HTTPS
+      if (isHttpUrl(assetURI)) {
+        if (__DEV__) {
+          console.warn(
+            '[Rive] Remote sources are blocked in hardened runtime. ' +
+              'Use `require("./file.riv")` or `resourceName`.'
+          );
+        }
+        return {};
       }
 
       // handle iOS bundled asset
@@ -527,7 +557,7 @@ const RiveContainer = React.forwardRef<RiveRef, Props>(
       return {
         resourceName: assetURI,
       };
-    }, [assetID, sourceURI, resourceNameProp, urlProp]);
+    }, [assetID, resourceNameProp, urlProp]);
     if (!resourceName && !url) {
       throw new Error(
         'Invalid Rive resource. Please provide a valid resource.'
